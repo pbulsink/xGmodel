@@ -1,0 +1,509 @@
+---
+title: "NHL Expected Goals Model"
+author: "Matthew Barlowe"
+date: "9/16/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(pROC)
+```
+
+## Creating Your First xG Model
+
+Ok with [Corsica](corsica.hockey) being down for now there has been a lack of publicly available xG(Expected Goals) data.  Obviously with it coming back up soon that will change, but it got me thinking about building my own model, which in turn made me think of how when I first heard about xG I wanted to know how it works.  While Emmanuel Perry and DTMAboutHeart do an excellent job of explaining their models [here](http://www.corsica.hockey/blog/2016/03/03/shot-quality-and-expected-goals-part-i/) and [here,](https://hockey-graphs.com/2015/10/01/expected-goals-are-a-better-predictor-of-future-scoring-than-corsi-goals/) to the uninitiated the explanations can be quite daunting.
+
+At this point in my hockey analytics education I understood Corsi,GF%, and why +/- is bad. But this was completely new and cool and I wanted to understand it more.  I understooed what xG was and what it said, but I wanted to understand how to actually come up with.  I wanted to peak behind the curtain and see the wizard at work and unfortunately there was little in the way of that at the time.  This article serves to fill that need.  
+
+##Ground Rules
+
+First a couple things to get out of the way.  First is that you have some familiarity with hockey stats like Corsi and Fenwick and the such.  I won't be explaining what these mean in the article but this [link](https://www.pensburgh.com/2017/7/13/15955574/summer-time-waster-an-introduction-to-advanced-stats-in-hockey) has the basic rundown.  This will be written in R so if you have some experience working with that language that is a bonus.  However, this article will be written in a way that if you just follow the steps you can get the model up and running as long as you have some familiarity with R Studio.  R Studio can be downloaded [here](https://www.rstudio.com/) and if you'd like to learn R more here is a good link to learn the [basics](http://tryr.codeschool.com/levels/1/challenges/1) and there is also the Swirl Package that can be run in R Studio.  This [link](http://swirlstats.com/students.html) will show you the directions to get that up and running in R Studio. 
+
+Normally I work in Python but I'm trying to improve my R knowledge which is another reason this is written in R. Another version of this will be written in Python as soon as I get the R version up and running.  So if you don't want to learn R, or don't have time, I'll have a version for you up soon.
+
+Also this model won't be perfect by any means.  If you're expecting a perfect model that is on the level of what is publicly out there this won't be it.  In fact I'm not even sure how good this will be because as I'm typing this I haven't ran the numbers yet.  I will learn things just as you do because I'm running the program as I type. The purpose of this article is just to familiarize you with the process behind making the model and look at some of the decisions behind what variables we include.  There will be a part two where we work on fine tuning the model and go deeper into the data.
+
+##The Data
+
+The Data for this project comes from the 2015, 2016, and 2017 NHL seasons.  I'd like to think [EvolvingWild](https://twitter.com/EvolvingWild) for helping me setup the scraper for the NHL data.  I keep telling myself I'm going to write one and never get around to it so his help was crucial to getting this underway. The Play by Play (PbP) data can be found [here](https://drive.google.com/open?id=0B8UCtw99csGbTWd4cm5WakFXOFk) in csv form along with the file for the code and the actual model itself.  They are rather large around .4 GB as they have every single event from each season so they may take a while to download.  You will also find the files for the R markdown that this is written in and the code for the model as well if you want to play around with it
+
+##The Model
+For this xG model we will be building what is called a [logistical regression](https://en.wikipedia.org/wiki/Logistic_regression) in order to predict our xG values.  There are a few reasons why I am choosing this one as to other modeling options:
+
+* Logistic regressions work well when the output, or dependent variable, is categorical.  In everyday speak this means that there are a set number of outcomes that the result of the action can result in.  In mathematical terms the output would be referred to as a discrete outcome as opposed to a continous outcome where the output can be any value between a range of values.  If you'd like to read more about this here is a handy [link](http://stattrek.com/probability-distributions/discrete-continuous.aspx).  Since the value of each shot attempt either results in a goal or doesn't it fits the output of this model very well.
+
+* Another reason is that logistic regressions are relatively easier to implement than other models. The code behind them is not all that complex.  As I'm no R expert this is a non trivial reason and for my readers I expect it to be as well.
+
+* And last they are computationally efficient to train and predict.  Meaning you won't be sitting around for days waiting on the model to get done predicting so you can work with the data it produces.
+
+However, there are flaws to a logistic model as well:
+
+* You need lots of data to fit a logistic regression especially when the outcomes are rare.  This isn't as much as a problem with this model since there are large amounts of data for each season, but if one was wanting to use it in the future keep that in mind.
+
+* It doesn't handle large numbers of features very [well.](https://www.edvancer.in/logistic-regression-vs-decision-trees-vs-svm-part2/)  This means the more variables you feed the regression the worse it may become.  In this simple model we won't be doing that but still should be something we think about in the future when we fine tune the model.
+
+* Logistic regressions can be prone to high bias in the [bias-variance](https://elitedatascience.com/bias-variance-tradeoff) distribution.  We'll get more into that in part two when we fine tune the model.  But for now just remember that a high bias model could result in underfitting which means the model could be missing the signal from the data.
+
+##Output of the Model
+
+Logistic Regressions produce a probability of something happening given the independent variables.  So when the model says that a shot attempt produces .60 xG it means that given an average player that six out of ten times a shot attempt with the exact same variables will produce a goal.  This [link](http://www.mirror.co.uk/sport/football/news/what-expected-goals-mean-welcome-10978290) talks about it from a soccer perspective but a lot of the same themes apply to hockey as well.
+
+We will then sum up these probabilities to get a team's xG total per game.  That's why the totals of xG for games are often in decimal and not whole values. Ok enough back story and info and now it's time to move on to working with the data.
+
+##Importing the Data
+```{r warning=FALSE, message=FALSE}
+setwd('~/ProgrammingStuff/R/NHLScraper/FullNHLSeasonPbP/')
+PbP2016Data <- read_csv('2015NHLPbP.csv')
+PbP2015Data <- read_csv('2016NHLPbP.csv')
+Test_PbP_Data <- read_csv('2017NHLPbP.csv')
+```
+
+You want to put the directory in the `setwd()` function where ever you have downloaded the NHL PbP data.  From there we use the `read_csv()` function from the `readr` package we imported earlier.  We have three seasons worth of data but right now I'm only going to read in two seasons.  The reason behind this is the validation step where we test our model against the data.  You want to do that against data that is out of sample i.e. data the model didn't use in its training set.
+
+Usually this is around 30% of your dataset but I broke the data into separate seasons instead of a percentage for a couple reasons.  The main reason is I want to keep the season broken apart by year so I don't have any data from 2017 in my training data so I can do a comparison at the end and see if my model has any predictive power or is a more descriptive model.  If you are of unsure of the difference here is a good [link](https://stats.stackexchange.com/questions/225277/difference-between-descriptive-and-predictive-modelling) that describes it well.  Secondly the data split just feels right by the way people around the NHL segment their analysis as well.
+
+So now that the all the data is imported from the 2015 and 2016 NHL seasons the first thing we will do is combine them into one giant data frame with the `bind_rows` function and then take a look at the structure of the resulting dataframe
+
+```{r}
+Train_PbP_Data <- bind_rows(PbP2015Data, PbP2016Data)
+dim(Train_PbP_Data)
+str(Train_PbP_Data, max.level = 1)
+```
+
+`dim()` gives us the dimension of the datframe of the NHL PbP data.  It shows that the dataframe has 2356958 observations of 41 different variables.  Will we need all 41 of those variables?  Yes if we were trying to create a full stat database, but we'll be mainly working with the rows, or observations, that deal with Fenwick events.  Why Fenwick and not Corsi?  Well we are limited to those events because the NHL records the location of blocks at the location of the block and not the location of the shot and as you'll see later distance plays a key role in our model so if we feed it false information we could get a false output hence the Fenwick only events.  Those events are labeled in the `event_type` variable of the dataframe so lets look what's there so we can pick out what we need.
+
+```{r}
+unique(Train_PbP_Data$event_type)
+```
+
+So the only events the model needs are `SHOT`, `MISS`, `GOAL`.  We're going to create what's called a vector in R so we don't have to type those over and over again.  We are also going to create a few functions that will create some variables we need in the datasets as well so we don't have to cut and paste.  This functions can be saved and used on other NHL dataframes as well so feel free to improve or used them as needed.  
+
+The first thing I'm going to do is filter out all the Shootout atttempts.  The data lists the shoot out as period five so we'll just keep all rows that have the value less than 5 in the `game_period` column. 
+
+```{r}
+fenwick_events <- c('SHOT', 'MISS', 'GOAL')
+
+Train_PbP_Data <- Train_PbP_Data[Train_PbP_Data$game_period < 5,]
+dim(Train_PbP_Data)
+```
+
+The next couple functions are pretty simple as well I want to create new columns that tell me whether each event was a goal and if it was an event by the home team.  Basically while this data is available in other columns I want to make my checks simpler in the future so my code is simpler.  Also creating a column that's sole function is to say whether the event was a goal or not makes it easier to pass to logistic regression later without having to doing any extra filtering as the only two options will be 1 or 0.  This is done to setup a result that the logistic regression can model.  The technical term for this is creating a [dummy variable.](https://en.wikipedia.org/wiki/Dummy_variable_(statistics))  ["The dummy variables act like 'switches' that turn various parameters on and off in an equation."](https://www.socialresearchmethods.net/kb/dummyvar.php)
+
+```{r}
+is_home <- function(dataframe){
+    dataframe$is_home <- ifelse(dataframe$event_team == 
+                                dataframe$home_team, 1 , 0)
+    return(dataframe)
+}
+
+is_goal <- function(dataframe){
+    dataframe$is_goal <- ifelse(dataframe$event_type == "GOAL", 1, 0)
+    return(dataframe)
+}
+
+Train_PbP_Data <- is_home(Train_PbP_Data)
+Train_PbP_Data <- is_goal(Train_PbP_Data)
+```
+Ok now we have those two columns setup relatively easily.  Reading a lot of different research on the idea of expected goals leads these main variables as the most important when it comes to modeling xG: distance from goal, angle to the goal, shot type, whether the shot was from a rebound, a shot on the rush, shooter team strength i.e. PP, EV, SH.  This model will include all of these variables but we need to set them up first.
+
+
+The first thing I'm going to go is create a time difference between each event in the data set which we will then use later in our model to measure whether the shots are on the rush or a rebound.  We'll also set any NAs that result from the calculations to zero in case there are some NAs in the PBP data variables we are using to calculate the other variables.
+```{r}
+Train_PbP_Data <- Train_PbP_Data %>% group_by(game_id) %>%
+    arrange(event_index, .by_group = TRUE) %>%
+    mutate(time_diff = game_seconds - lag(game_seconds))
+    
+
+Train_PbP_Data$time_diff[is.na(Train_PbP_Data$time_diff)] <- 0
+Train_PbP_Data$is_home[is.na(Train_PbP_Data$is_home)] <- 0
+```
+```{r}
+
+```
+
+```{r}
+Train_PbP_Data$is_rebound <- ifelse(Train_PbP_Data$time_diff < 3 & 
+                                Train_PbP_Data$event_type %in% fenwick_events &
+                                Train_PbP_Data$event_team == 
+                                lag(Train_PbP_Data$event_team),
+                                1, 0)
+
+Train_PbP_Data$is_rebound[is.na(Train_PbP_Data$is_rebound)] <- 0
+```
+
+```{r}
+Train_PbP_Data$is_rush <- ifelse(Train_PbP_Data$time_diff < 4 &
+                                 lag(abs(Train_PbP_Data$coords_x)) < 25 &
+                                 Train_PbP_Data$event_type %in% fenwick_events,
+                                 1, 0)
+```
+To make this easier we are going to filter out the Fenwick events first then apply our data manipulations and our regression.
+
+
+```{r}
+
+Train_PbP_Data$is_rebound[is.na(Train_PbP_Data$time_diff)] <- 0
+Train_PbP_Data$is_rush[is.na(Train_PbP_Data$is_rush)] <- 0
+Train_Fenwick_Data<- filter(Train_PbP_Data, event_type %in% c("SHOT", "MISS", "GOAL"))
+```
+
+The resulting dataframe is much smaller and should be easier to work with.  Now on to creating the variables to include in the logistic regression.  Let's check our data we're going to be working with to make sure there are not NA or NaN values that we need to deal with before doing our calculations.
+
+```{r}
+unique(Train_Fenwick_Data$event_detail)
+unique(Train_Fenwick_Data$coords_x)
+unique(Train_Fenwick_Data$coords_y)
+unique(Train_Fenwick_Data$game_strength_state)
+```
+ 
+It looks like there's some NA data in there meaning there isn't a value for the `event_detail` so let's take a look at what's there.
+ 
+ 
+```{r}
+head(Train_Fenwick_Data[Train_Fenwick_Data$event_detail == 'NA',], n = 15)
+```
+
+So there are 10 rows of data out of our 34,165 that has nothing but NA values so the next move will be to go ahead and filter those out.
+
+```{r}
+Train_Fenwick_Data <- filter(Train_Fenwick_Data, !is.na(event_detail))
+head(Train_Fenwick_Data[Train_Fenwick_Data$event_detail == 'NA',])
+```
+
+
+Next we'll turn the categorical variables of into factors so that the model can use them in the training function later.  And it also helps in graphing as well.
+```{r}
+
+Train_Fenwick_Data$event_detail<- as.factor(Train_Fenwick_Data$event_detail)
+
+```
+
+The next variable to calculate is the angle of the shot relative to the center of the goal.  Let's look at the range of our coordinate system.
+```{r}
+range(Train_Fenwick_Data$coords_x)
+range(Train_Fenwick_Data$coords_y)
+```
+
+Well that didn't work so we'll need to filter out the `NA` values:
+
+```{r}
+Train_PbP_Data <- filter(Train_PbP_Data, coords_x != 'NA' & coords_y != 'NA') 
+
+range(Train_PbP_Data$coords_x)
+range(Train_PbP_Data$coords_y)
+```
+
+So here we have the range of the NHL rink by the x and y coordinates.  An NHL rink is 200 feet wide by 85 feet across so every vertical up or down is equal to one foot and and each x integer is equal to .995 feet.  The goal line is 11 feet from the end boards so that is equal to 11.05 in units in our coordinate system.  With this knowledge we now know the coordinate of the center of the goal is (87.95,0).
+
+So given a shots location let's say for this test case of a shot taken from (50, 12) and try to determine the angle using what we know about the coordinate system.  The angle we are trying to find Theta is equal to Sin(Theta) = Opposite/Hypoteneuse.  We know the opposite side is equal the y coordinate.  The hypoteneuse we'll get the length of using the trusty pythagorean theorem of the Sqrt((87.95-50)^2 + 12^2).  So adding that altogether we have this:
+
+```{r}
+asin(12/sqrt(1440.20+144))
+```
+
+That answer is in radians in order to get it to degrees we will multiply it by 180 and divide by pi.
+
+```{r}
+radian <- asin(12/sqrt(1440.20+144))
+(radian * 180)/3.14
+```
+
+So now we have that it is a shot taken at a 17 degree angle from the center of the goal. So let's add all this together and create a new column for each shots angle form goal.  To simplify things I'm also just going to mirror the x values by taking the `abs()` value of each as I don't really believe which zone the shot is taken on has that much of an effect.  I will also switch the y value from negative to positive in order to accurately display the correct wing that the shot was taken from.
+
+```{r}
+Train_Fenwick_Data$coords_y <- ifelse(Train_Fenwick_Data$coords_x < 0,
+    -1 * Train_Fenwick_Data$coords_y, Train_Fenwick_Data$coords_y)
+
+Train_Fenwick_Data$coords_x <- abs(Train_Fenwick_Data$coords_x)
+
+
+Train_Fenwick_Data$shot_angle <- (asin(abs(Train_Fenwick_Data$coords_y)/sqrt((87.95 
+                                    - abs(Train_Fenwick_Data$coords_x))^2
+                                    + Train_Fenwick_Data$coords_y^2))*180)/ 3.14
+```
+
+With this metric shots that have a 0 angle are 90 Degrees to the net or in the slot.  There's another problem though because shots below the net should result in an angle larger than 90 degrees although our fomula won't do that because the negative value of the difference between the goal line and shot will wash out when we square it. So to fix that we just need to add 90 to the value of the angle if our x coordinate is larger than the x coordinate of the goal line.  Also now that we have the coordinates and angle straight the next thing to do is construct the distance from the goal which is just the simple pythagorean theorem
+
+```{r}
+Train_Fenwick_Data$shot_angle <- ifelse(abs(Train_Fenwick_Data$coords_x) > 88, 90 + 
+                                  (180-(90 + Train_Fenwick_Data$shot_angle)), 
+                                  Train_Fenwick_Data$shot_angle)
+
+Train_Fenwick_Data$distance <- sqrt((87.95 - abs(Train_Fenwick_Data$coords_x))^2 + Train_Fenwick_Data$coords_y^2)
+
+
+```
+
+
+The strength state is important but it is a little muddy and there are a lot of different factors.  First is that while it tells the strength state of the game it will be easier on the model if we probably tell it the strength state of the person taking the shot because while it may be the PP if someone on the PK is taking a shot logic follows that it is less likely to be a dangerous chance than the shot by the team on the PP.
+
+```{r echo=FALSE}
+even_strength <- c('5v5', '4v4', '3v3', 'EvE', '5v0')
+home_advantage <- c('5v4', '5v3', '4v3')
+away_advantage <- c('4v5', '3v5', '3v4')
+home_empty_net <- c('Ev5', 'Ev4', 'Ev3')
+away_empty_net <- c('5vE', '4vE', '3vE')
+
+
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% even_strength, 
+                                        'EV', NA)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% home_advantage
+    & Train_Fenwick_Data$is_home == 1, 'PP', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% away_advantage
+    & Train_Fenwick_Data$is_home == 1, 'SH', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% home_advantage
+    & Train_Fenwick_Data$is_home == 0, 'SH', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% away_advantage
+    & Train_Fenwick_Data$is_home == 0, 'PP', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% home_empty_net
+    & Train_Fenwick_Data$is_home == 1, 'PP', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% home_empty_net
+    & Train_Fenwick_Data$is_home == 0, 'EN', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% away_empty_net
+    & Train_Fenwick_Data$is_home == 1, 'EN', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% away_empty_net
+    & Train_Fenwick_Data$is_home == 0, 'PP', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% home_empty_net
+    & Train_Fenwick_Data$is_home == 1, 'PP', Train_Fenwick_Data$shooter_strength)
+Train_Fenwick_Data$shooter_strength <- ifelse(Train_Fenwick_Data$game_strength_state %in% c('Ev0', '0vE'), 
+                                        'PS', Train_Fenwick_Data$shooter_strength)
+```
+
+So we've got all our variables set and ready to go.  We've got shot location, shot type, strength state, and whether it was a shot from the home team or not.  Needless to say for this base model we are going to ignore the player actually taking the shot and the goalie in net.  Obviously these are important variables as a shot by Sidney Crosby and reasonably expected to go in at a higher way with all other variables controled than the same shot by say Jay McClement.  And again that same shot against Carey Price or Braden Holtby would resaonably be expected to drop the chances of that same shot as opposed to Cam Ward or Chad Johnson. 
+
+So yes I realize that not trying to factor in those variables makes a big difference, but for the purpose of this model and article we can safely ignore them because right now I'm not worried about showing the best model.  I'm trying to show a model and instruct people on how to build one.
+
+##Building the Model
+
+Now with all our variables set,  we are finally read to build the actual model. The first step to doing so is training the model on our training data. I am going to use all the variables we created.  We will be doing this with R's `glm()` function which stands for generalized linear model.
+
+```{r}
+
+xGmodel <- glm(is_goal ~ poly(distance, 3, raw = TRUE) + 
+                 poly(shot_angle, 3, raw = TRUE) + event_detail + 
+                 shooter_strength +
+                 is_rebound + is_rush,
+                 data = Train_Fenwick_Data, 
+                 family = binomial(link = 'logit'))
+
+save(xGmodel, file = "xGmodelver2.rda")
+```
+
+
+The the first argument of the `glm` function is the formula we want to use to predict goals. Data is our training dataframe.  The method we are using is a general linear model but when we use the binomial family that tells it to use the logistic regression.  And that's really all there is to it for building the model itself.  In a lot of model building scenarios the time it takes to get the data ready for the model and the time afterwards to test the model will be the majority of time spent in building a model.
+
+```{r}
+
+summary(xGmodel)
+coef(xGmodel)
+```
+
+In the output you can see that all but a few of the model's predictor variables are statistically significant at a .001 level at predicting the variance in the data. The ones that aren't like the different shot types would fit in with conventional wisdom as those shot types aren't the majority of NHL goals.  The other is Penalty Shot and while one would think it would be there probably just wasn't enough data on them to make a decision one way or the other.
+
+One way to test the fit of our data is to take the chi square distribution of the difference in the Null and Residual deviances and their respective degrees of freedom.
+
+```{r}
+1 - pchisq(95532-85842, 203199-203183)
+```
+
+What this test does is tell us if the difference in the deviance between the Null model which is just a model with only the intercept and the logistic model we created is due to chance or is statistically significant.  By subtracting it from one it gives the area to the left of our model on the chi square distribution curve.  Since it is zero it tells us that the model is satistically significant at describing the variance in our data than the null model.  This doesn't mean the model is "Good" by any means fortunately there are more tests for that.  You can read more about Null and Residual deviances [here](https://stats.stackexchange.com/questions/141177/test-glm-model-using-null-and-model-deviances) and [here](https://stats.stackexchange.com/questions/108995/interpreting-residual-and-null-deviance-in-glm-r/109864)
+
+Ok now that we have the model ready to go and the fit of it is statistically significant over the null model it's time to see how it fits our test data.  I'll be performing all the same steps to the test data to create the variables as I did the training data.  I won't go through all the steps again but if you want to see the code it will be in the google drive with the rest of the files.
+
+```{r echo=FALSE}
+Test_PbP_Data <- Test_PbP_Data[Test_PbP_Data$game_period < 5,]
+Test_PbP_Data <- is_home(Test_PbP_Data)
+Test_PbP_Data <- is_goal(Test_PbP_Data)
+Test_PbP_Data <- Test_PbP_Data %>% group_by(game_id) %>%
+arrange(event_index, .by_group = TRUE) %>%
+    mutate(time_diff = game_seconds - lag(game_seconds))
+
+Test_PbP_Data <- filter(Test_PbP_Data, coords_x != 'NA' & coords_y != 'NA')
+
+
+Test_PbP_Data$time_diff[is.na(Test_PbP_Data$time_diff)] <- 0
+Test_PbP_Data$is_home[is.na(Test_PbP_Data$is_home)] <- 0
+
+Test_PbP_Data$is_rebound <- ifelse(Test_PbP_Data$time_diff < 3 & 
+                                        Test_PbP_Data$event_type %in% fenwick_events &
+                                        Test_PbP_Data$event_team == 
+                                        lag(Test_PbP_Data$event_team),
+                                    1, 0)
+
+Test_PbP_Data$is_rebound[is.na(Test_PbP_Data$is_rebound)] <- 0
+
+Test_PbP_Data$is_rush <- ifelse(Test_PbP_Data$time_diff < 4 &
+                                     lag(abs(Test_PbP_Data$coords_x)) < 25 &
+                                     Test_PbP_Data$event_type %in% fenwick_events,
+                                 1, 0)
+
+Test_PbP_Data$is_rebound[is.na(Test_PbP_Data$is_rebound)] <- 0
+Test_PbP_Data$is_rebound[is.na(Test_PbP_Data$time_diff)] <- 0
+Test_PbP_Data$is_rush[is.na(Test_PbP_Data$is_rush)] <- 0
+Test_Fenwick_Data<- filter(Test_PbP_Data, event_type %in% c("SHOT", "MISS", "GOAL"))
+Test_Fenwick_Data <- filter(Test_Fenwick_Data, !is.na(event_detail))
+Test_Fenwick_Data$event_detail<- as.factor(Test_Fenwick_Data$event_detail)
+Test_PbP_Data <- filter(Test_PbP_Data, coords_x != 'NA' & coords_y != 'NA')
+
+Test_Fenwick_Data$coords_y <- ifelse(Test_Fenwick_Data$coords_x < 0,
+            -1 * Test_Fenwick_Data$coords_y, Test_Fenwick_Data$coords_y)
+
+Test_Fenwick_Data$coords_x <- abs(Test_Fenwick_Data$coords_x)
+
+
+Test_Fenwick_Data$shot_angle <- (asin(abs(Test_Fenwick_Data$coords_y)/sqrt((87.95 
+                - Test_Fenwick_Data$coords_x)^2 + Test_Fenwick_Data$coords_y^2))*180)/ 3.14
+
+Test_Fenwick_Data$shot_angle <- ifelse(Test_Fenwick_Data$coords_x > 88, 90 + 
+                                            (90 - Test_Fenwick_Data$shot_angle), 
+                                        Test_Fenwick_Data$shot_angle)
+
+Test_Fenwick_Data$distance <- sqrt((87.95 - abs(Test_Fenwick_Data$coords_x))^2 + Test_Fenwick_Data$coords_y^2)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% even_strength, 
+                                              'EV', NA)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% home_advantage
+            & Test_Fenwick_Data$is_home == 1, 'PP', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% away_advantage
+            & Test_Fenwick_Data$is_home == 1, 'SH', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% home_advantage
+            & Test_Fenwick_Data$is_home == 0, 'SH', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% away_advantage
+            & Test_Fenwick_Data$is_home == 0, 'PP', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% home_empty_net
+            & Test_Fenwick_Data$is_home == 1, 'PP', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% home_empty_net
+            & Test_Fenwick_Data$is_home == 0, 'EN', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% away_empty_net
+            & Test_Fenwick_Data$is_home == 1, 'EN', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% away_empty_net
+            & Test_Fenwick_Data$is_home == 0, 'PP', Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% home_empty_net
+            & Test_Fenwick_Data$is_home == 1, 'PP',Test_Fenwick_Data$shooter_strength)
+
+Test_Fenwick_Data$shooter_strength <- ifelse(Test_Fenwick_Data$game_strength_state %in% c('Ev0', '0vE'), 
+                                              'PS', Test_Fenwick_Data$shooter_strength)
+
+
+```
+
+
+So now that we have our test data ready to go we will predict the expected goal for each Fenwick attempt in our test data
+```{r}
+Test_Fenwick_Data$xG <- predict(xGmodel, Test_Fenwick_Data, type = "response")
+```
+
+Let's graph our predictions at each location by the average xg Value to get a feel for our data.
+
+```{r}
+avg_xG_by_coord <- Test_Fenwick_Data %>% group_by(coords_x, coords_y) %>%
+    summarise(xg = mean(xG))
+
+ggplot(avg_xG_by_coord, aes(coords_x, coords_y, fill = xg)) + geom_raster() +
+    scale_fill_gradient(low = 'blue', high = 'red')+
+    geom_vline(xintercept = 0, color = 'red') +
+    geom_vline(xintercept = 25, color = 'blue') +
+    geom_vline(xintercept = 88, color = 'red') +
+    xlab('X Coordinates') + ylab('Y Coordinates') +
+    labs(title = 'Average xG Value by Coordinate')
+```
+
+As you can see there are some weird outliers in the neutral zone.  I'd assume these are caused by the inclusion of empty net goals in the prediction model.  But other than that the plot seems to fit the intution that the closer to the goal and closer to the center of the ice a shooter is the greater chance of a shot turning into a goal.  The next way to test the predictions of our model is to plot it's [ROC curve](https://en.wikipedia.org/wiki/Receiver_operating_characteristic) and calculate the area underneath the curve. This will be accomplished with the `pROC` package in R.
+
+
+```{r warning=FALSE}
+g <- roc(is_goal ~ xG, data = Test_Fenwick_Data)
+plot(g)
+auc(g)
+```
+
+You can read more info about interpereting the ROC curve from this [link,](http://gim.unmc.edu/dxtests/roc3.htm) but the gist of it is that the model is a fair model by this metric.  It's not a perfect model, but it's not completely useless as well.  But for the first attempt at a model it shows us that I'm working in the right direction and we have 
+good foundation on which to build improvments on.
+
+Ok lets to get to the fun stuff and see how individual players performed in the 2017 season by our model.  I'm also going to plot each players xG total versus their goal total as another way to test the predictiveness of the model as well.
+
+
+```{r}
+#code to group xg and goals by player
+xg_player <- Test_Fenwick_Data %>%
+    group_by(event_player_1, event_team) %>%
+    summarise( xG = sum(xG), Goals = sum(is_goal), Difference = sum(xG) - sum(is_goal))
+head(xg_player)
+arrange(xg_player, desc(xG))
+```
+```{r warning=FALSE}
+ggplot(aes(x = xG, y = Goals), data = xg_player) +
+    geom_point() + 
+    geom_smooth(method = 'lm') +
+    labs(title = 'Expected Goals vs Goals by Player')
+```
+```{r}
+play_xg <- lm(Goals ~ xG, data = xg_player)
+summary(play_xg)
+```
+
+As seen with the graph and the regression line the xG model works very well in predicting individual goal totals based on the inputs from the data.  But as the graph shows the greatest variance in our data of predicted versus actual is when the data approaches the extremes of the higher end.  Now let's take a look at a team level
+
+```{r}
+xg_team <- Test_Fenwick_Data %>%
+    group_by(event_team) %>%
+    summarise( xG = sum(xG), Goals = sum(is_goal), Difference = sum(xG) - sum(is_goal))
+
+arrange(xg_team, desc(xG))
+```
+
+```{r}
+team_xg <- lm(Goals ~ xG, data = xg_team)
+summary(team_xg)
+ggplot(aes(x = xG, y = Goals), data = xg_team) +
+    geom_point() + 
+    geom_smooth(method = 'lm') +
+    labs(title = 'Expected Goals vs Goals by Team')
+```
+
+At the team level the xG model isn't near as good at predicting goals as at the individual. I would expect this comes from the high variance from the higher end of the xG/Goal spectrum.  The differences add up to drive the team xG amounts further away from the actual goal amounts leading to a worse correlation.
+
+
+##Conclusions
+
+I believe with this model I have created a method of reasonably predicting the probability of whether a shot on average will be a goal or not give our inputs.  Is it a perfect model?  No, not by any means but it is a good start towards building something more complex and maybe more accurate.  One way could be including some form of shooter and/or goalie talent evaluator that would help improve things.  Despite that though the model created did have a decent level of success by our various tests.
+
+The regression was statistically significant over the Null model with a chi square value of 0.  Meaning the model is better suited in determining the variance in the data over the Null model.  The model also performed well in the ROC test with a .7383 area under the curve.  Another example of its accruacy was the ability to predict an individual player's goal output as shown by the correlation between the two values with an .8716 adjusted R squared.
+
+Again all of these performance metrics were run on the test data set which the model was not influenced by at all. I think one of the main things with this metirc is one can see whether teams and players are playing above or below their probabilites given the results versus their expected results.  
+
+Where there is a large difference one way or the other one could reasonably expect a team to regress to the mean at some point in the future, and if there is no sign of regression look deeper to see what other factors than what are included in the model could be affecting team and player goal outputs.  Things such as injuries, playing time, and level of teammates all could affect the number of high level probability shots a player is attempting.
+
+A couple things about what this model does not do as well.  It does not predict what are the likely goal outputs of a player going forward.  Tests could be run to see if there are intra and inter season repeatabilities at a player level which given the model's predictive level's at an individual level I would expect there would be.  Then combined with an aging curve and some form of regression to the mean I think a reasonable model could be created. But as of right now I would not be confident in using this model in that capacity at all.
+
+Again all the files of code, data, and model will be in the Google drive folder linked to earlier.
+
+##Sources
+
+Obviously I didn't come up with this all on my own.  All the writers of these articles were highly influential in the decisions made in creating this model and without them it wouldn't have turned out as well as it did.  So all the credit to these writers for making the path a lot easier for me. 
+
+[Emmanuel Perry's xG Model](http://www.corsica.hockey/blog/2016/03/03/shot-quality-and-expected-goals-part-i/)
+
+[DTMAboutHeart xG Model](https://hockey-graphs.com/2015/10/01/expected-goals-are-a-better-predictor-of-future-scoring-than-corsi-goals/)
+
+[LAEGAP Methodology](http://hockeymetrics.net/laegap-methodology/)
+
+[NHL Shot Quality by Ken Krzywicki](http://hockeyanalytics.com/Research_files/SQ-RS0910-Krzywicki.pdf)
+
+[Evaluating NHL Goalies, Skaters, and Teams using Weighted Shots](https://arxiv.org/pdf/1205.1746.pdf)
+
+[eGF Finally Fully Explained](http://xtrahockeystats.com/wordpress/?p=70)
