@@ -57,13 +57,12 @@ We will then sum up these probabilities to get a team's xG total per game.  That
 
 ##Importing the Data
 ```{r warning=FALSE, message=FALSE}
-setwd('~/ProgrammingStuff/R/NHLScraper/FullNHLSeasonPbP/')
-PbP2016Data <- read_csv('2015NHLPbP.csv')
-PbP2015Data <- read_csv('2016NHLPbP.csv')
-Test_PbP_Data <- read_csv('2017NHLPbP.csv')
+PbP2016Data <- read_csv('./data/2015NHLPbP.csv')
+PbP2015Data <- read_csv('./data/2016NHLPbP.csv')
+Test_PbP_Data <- read_csv('./data/2017NHLPbP.csv')
 ```
 
-You want to put the directory in the `setwd()` function where ever you have downloaded the NHL PbP data.  From there we use the `read_csv()` function from the `readr` package we imported earlier.  We have three seasons worth of data but right now I'm only going to read in two seasons.  The reason behind this is the validation step where we test our model against the data.  You want to do that against data that is out of sample i.e. data the model didn't use in its training set.
+You want to put the downloaded data in a `data` folder in this directory.  From there we use the `read_csv()` function from the `readr` package we imported earlier.  We have three seasons worth of data but right now I'm only going to read in two seasons.  The reason behind this is the validation step where we test our model against the data.  You want to do that against data that is out of sample i.e. data the model didn't use in its training set.
 
 Usually this is around 30% of your dataset but I broke the data into separate seasons instead of a percentage for a couple reasons.  The main reason is I want to keep the season broken apart by year so I don't have any data from 2017 in my training data so I can do a comparison at the end and see if my model has any predictive power or is a more descriptive model.  If you are of unsure of the difference here is a good [link](https://stats.stackexchange.com/questions/225277/difference-between-descriptive-and-predictive-modelling) that describes it well.  Secondly the data split just feels right by the way people around the NHL segment their analysis as well.
 
