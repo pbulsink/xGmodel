@@ -1,7 +1,7 @@
 
 
-game_number <- readline(prompt="Enter NHL Game Number: ")
-setwd("~/ProgrammingStuff/R/NHLScraper/")
+#game_number <- readline(prompt="Enter NHL Game Number: ")
+#setwd("~/ProgrammingStuff/R/NHLScraper/")
 #Emmanuel Perry's Scraper from corsica.hockey and used with his permission######
 #################################################################################
 ###########              START HERE TO LOAD ALL FUNCTIONS             ###########  
@@ -3422,4 +3422,4 @@ ggsave('xGlocations.png', plot = xg_locations_plot, height = 4)
 ggsave('xGHome.png', home_table)
 ggsave('xGAway.png',  away_table)
 write_delim(pbp_df, game_number, delim = '|')
-    
+    #
